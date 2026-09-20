@@ -11,6 +11,13 @@ services:
           sleep "$${CANOPY_INTERVAL_SECONDS:-60}"
         done
     restart: unless-stopped
+    healthcheck:
+      test:
+        ["CMD", "python", "/app/canopy_observer.py", "--healthcheck", "--report-dir", "/app/reports"]
+      interval: 60s
+      timeout: 5s
+      start_period: 120s
+      retries: 2
     env_file:
       - .env
     volumes:

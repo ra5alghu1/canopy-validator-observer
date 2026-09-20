@@ -37,6 +37,17 @@ The observer runs once per minute by default and restarts automatically. Stop it
 docker compose -f compose.observer.yml down
 ```
 
+Docker health follows the latest saved report. The container is `unhealthy` when `latest.json` is
+missing, malformed, older than `CANOPY_HEALTH_MAX_AGE_SECONDS`, or reports `CRITICAL`. A fresh
+`WARNING` report keeps the container healthy while preserving the warning in logs and JSON. Check
+the current state with:
+
+```bash
+docker compose -f compose.observer.yml ps
+docker inspect --format '{{.State.Health.Status}}' \
+  "$(docker compose -f compose.observer.yml ps -q observer)"
+```
+
 For a single foreground check:
 
 ```bash
@@ -124,6 +135,7 @@ identities are intentionally excluded from this record.
 | `CANOPY_WARNING_PERCENT` | `80` | Resource warning threshold |
 | `CANOPY_CRITICAL_PERCENT` | `90` | Resource critical threshold |
 | `CANOPY_INTERVAL_SECONDS` | `60` | Delay between checks in the Compose service |
+| `CANOPY_HEALTH_MAX_AGE_SECONDS` | `180` | Maximum age of `latest.json` before Docker reports `unhealthy` |
 
 `CANOPY_ADMIN_USER` and `CANOPY_ADMIN_PASSWORD` are optional and should remain only in `.env`.
 
