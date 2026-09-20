@@ -1,12 +1,15 @@
 import json
+import tempfile
 import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 from canopy_observer import (
     Config,
     RpcError,
+    check_report_health,
     collect_report,
     evaluate_height_progress,
     request_json,
@@ -180,6 +183,72 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual(report["status"], "OK")
         self.assertEqual(new_state["height"], 12345)
         self.assertEqual(new_state["changed_at"], now.isoformat())
+
+    def test_healthcheck_accepts_fresh_ok_and_warning_reports(self):
+        now = datetime(2026, 9, 20, 4, 0, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "latest.json"
+            for status in ("OK", "WARNING"):
+                path.write_text(
+                    json.dumps(
+                        {
+                            "generated_at": (now - timedelta(seconds=30)).isoformat(),
+                            "status": status,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                healthy, message = check_report_health(path, 180, now)
+
+                self.assertTrue(healthy)
+                self.assertIn(status, message)
+
+    def test_healthcheck_rejects_critical_report(self):
+        now = datetime(2026, 9, 20, 4, 0, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "latest.json"
+            path.write_text(
+                json.dumps({"generated_at": now.isoformat(), "status": "CRITICAL"}),
+                encoding="utf-8",
+            )
+
+            healthy, message = check_report_health(path, 180, now)
+
+        self.assertFalse(healthy)
+        self.assertIn("CRITICAL", message)
+
+    def test_healthcheck_rejects_stale_report(self):
+        now = datetime(2026, 9, 20, 4, 0, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "latest.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "generated_at": (now - timedelta(seconds=181)).isoformat(),
+                        "status": "OK",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            healthy, message = check_report_health(path, 180, now)
+
+        self.assertFalse(healthy)
+        self.assertIn("stale", message)
+
+    def test_healthcheck_rejects_missing_or_invalid_report(self):
+        now = datetime(2026, 9, 20, 4, 0, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "latest.json"
+
+            healthy, missing_message = check_report_health(path, 180, now)
+            path.write_text("not json", encoding="utf-8")
+            valid_json, invalid_message = check_report_health(path, 180, now)
+
+        self.assertFalse(healthy)
+        self.assertFalse(valid_json)
+        self.assertIn("missing or invalid", missing_message)
+        self.assertIn("missing or invalid", invalid_message)
 
 
 if __name__ == "__main__":

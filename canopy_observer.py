@@ -40,6 +40,47 @@ class Config:
 RequestFunction = Callable[[str, str, str, float, str, str], Any]
 
 
+def check_report_health(
+    path: Path,
+    max_age_seconds: float,
+    now: datetime | None = None,
+) -> tuple[bool, str]:
+    """Return Docker health from the latest persisted observer report."""
+
+    if max_age_seconds <= 0:
+        return False, "health report max age must be positive"
+
+    report = _read_json_object(path)
+    if report is None:
+        return False, f"health report is missing or invalid: {path}"
+
+    generated_at_raw = report.get("generated_at")
+    if not isinstance(generated_at_raw, str):
+        return False, "health report has no valid generated_at timestamp"
+    try:
+        generated_at = datetime.fromisoformat(generated_at_raw)
+    except ValueError:
+        return False, "health report generated_at timestamp is invalid"
+    if generated_at.tzinfo is None:
+        return False, "health report generated_at timestamp has no timezone"
+
+    checked_at = now or datetime.now(timezone.utc)
+    age_seconds = max(0.0, (checked_at - generated_at).total_seconds())
+    if age_seconds > max_age_seconds:
+        return (
+            False,
+            f"health report is stale: {int(age_seconds)}s old; "
+            f"limit is {int(max_age_seconds)}s",
+        )
+
+    status = report.get("status")
+    if status == "CRITICAL":
+        return False, "latest observer status is CRITICAL"
+    if status not in {"OK", "WARNING"}:
+        return False, f"health report has unsupported status: {status!r}"
+    return True, f"latest observer status is {status}; report age is {int(age_seconds)}s"
+
+
 def evaluate_height_progress(
     report: dict[str, Any],
     state: dict[str, Any] | None,
@@ -369,6 +410,17 @@ def _build_parser() -> argparse.ArgumentParser:
         default=float(os.getenv("CANOPY_CRITICAL_PERCENT", "90")),
     )
     parser.add_argument("--report-dir", default=os.getenv("CANOPY_REPORT_DIR", "reports"))
+    parser.add_argument(
+        "--healthcheck",
+        action="store_true",
+        help="check the freshness and status of the latest saved report",
+    )
+    parser.add_argument(
+        "--health-max-age-seconds",
+        type=float,
+        default=float(os.getenv("CANOPY_HEALTH_MAX_AGE_SECONDS", "180")),
+        help="maximum report age accepted by --healthcheck",
+    )
     parser.add_argument("--no-report", action="store_true")
     parser.add_argument("--json", action="store_true", help="print JSON only")
     return parser
@@ -416,6 +468,15 @@ def _save_height_state(state: dict[str, Any], directory: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     load_dotenv(Path(".env"))
     args = _build_parser().parse_args(argv)
+    report_directory = Path(args.report_dir)
+    if args.healthcheck:
+        healthy, message = check_report_health(
+            report_directory / "latest.json",
+            args.health_max_age_seconds,
+        )
+        print(message)
+        return 0 if healthy else 1
+
     admin_enabled = _env_bool("CANOPY_ADMIN_ENABLED", True) and not args.no_admin
 
     config = Config(
@@ -438,7 +499,6 @@ def main(argv: list[str] | None = None) -> int:
         print("stale height threshold must be positive", file=sys.stderr)
         return 2
 
-    report_directory = Path(args.report_dir)
     report = collect_report(config)
     height_state = _read_json_object(report_directory / "height-state.json")
     next_height_state = evaluate_height_progress(

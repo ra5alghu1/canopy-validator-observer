@@ -6,6 +6,8 @@ Notable changes to Canopy Validator Observer are recorded here.
 
 ### Added
 
+- Added Docker-native health reporting based on the status and freshness of `reports/latest.json`.
+  Missing, malformed, stale, and `CRITICAL` reports now make the observer container `unhealthy`.
 - Added persistent block-height progress tracking. A responsive node is now marked `CRITICAL` when
   its height has not advanced for the configured interval.
 - Added an always-on Docker Compose service with automatic restart and configurable polling.
