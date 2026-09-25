@@ -129,6 +129,7 @@ identities are intentionally excluded from this record.
 | `CANOPY_RPC_URL` | `http://127.0.0.1:50002` | Public RPC base URL |
 | `CANOPY_ADMIN_URL` | `http://127.0.0.1:50003` | Local admin RPC base URL |
 | `CANOPY_ADMIN_ENABLED` | `true` | Enables admin health checks |
+| `CANOPY_RETENTION_DAYS` | `30` | Timestamped report retention in days; `0` disables cleanup |
 | `CANOPY_TIMEOUT` | `4` | Request timeout in seconds |
 | `CANOPY_MIN_PEERS` | `1` | Minimum peer count before a warning |
 | `CANOPY_STALE_HEIGHT_SECONDS` | `600` | Maximum time without block-height progress |
@@ -157,3 +158,16 @@ python3 -m unittest discover -s tests -v
 ## License
 
 MIT
+
+## Report retention
+
+After successfully saving a report and height state, the observer removes timestamped
+`canopy-status-YYYYMMDDTHHMMSSZ.json` files older than 30 days from the report directory.
+Age is determined by the UTC timestamp in the filename. Set `CANOPY_RETENTION_DAYS`
+or pass `--retention-days` to choose a non-negative whole number of days; `0` disables
+cleanup. Existing old reports become eligible on the first successful run after upgrade.
+
+The just-written report, `latest.json`, `height-state.json`, unrelated files,
+invalid timestamp names, directories, and symlinks are preserved. Cleanup does not
+recurse. `--no-report` and `--healthcheck` never clean up files. Cleanup failures
+produce a warning on stderr without changing the node health result.

@@ -7,6 +7,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -381,6 +382,16 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _retention_days(value: str) -> int:
+    try:
+        days = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("retention days must be a non-negative integer")
+    if days < 0:
+        raise argparse.ArgumentTypeError("retention days must be a non-negative integer")
+    return days
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Read-only health checks for a Canopy validator",
@@ -421,6 +432,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=float(os.getenv("CANOPY_HEALTH_MAX_AGE_SECONDS", "180")),
         help="maximum report age accepted by --healthcheck",
     )
+    parser.add_argument(
+        "--retention-days",
+        type=_retention_days,
+        default=os.getenv("CANOPY_RETENTION_DAYS", "30"),
+        help="keep timestamped reports for this many days; 0 disables cleanup (default: 30)",
+    )
     parser.add_argument("--no-report", action="store_true")
     parser.add_argument("--json", action="store_true", help="print JSON only")
     return parser
@@ -449,6 +466,30 @@ def _save_report(report: dict[str, Any], directory: Path) -> Path:
     timestamped.write_text(content, encoding="utf-8")
     (directory / "latest.json").write_text(content, encoding="utf-8")
     return timestamped
+
+
+def prune_reports(
+    directory: Path,
+    retention_days: int,
+    keep: Path,
+    now: datetime | None = None,
+) -> None:
+    """Remove only expired timestamped reports; never follow symlinks or recurse."""
+    if retention_days <= 0:
+        return
+    now = now or datetime.now(timezone.utc)
+    for path in directory.iterdir():
+        if path == keep or path.is_symlink() or not path.is_file():
+            continue
+        match = re.fullmatch(r"canopy-status-([0-9]{8}T[0-9]{6}Z)\.json", path.name)
+        if not match:
+            continue
+        try:
+            timestamp = datetime.strptime(match[1], "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        if (now - timestamp).total_seconds() > retention_days * 86400:
+            path.unlink()
 
 
 def _read_json_object(path: Path) -> dict[str, Any] | None:
@@ -524,6 +565,12 @@ def main(argv: list[str] | None = None) -> int:
             )
             if report["status"] == "OK":
                 report["status"] = "WARNING"
+
+        else:
+            try:
+                prune_reports(report_directory, args.retention_days, report_path)
+            except OSError as exc:
+                print(f"Warning: report cleanup failed: {exc}", file=sys.stderr)
 
     if args.json:
         print(json.dumps(report, indent=2, ensure_ascii=False))
