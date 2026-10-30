@@ -5,6 +5,7 @@ Uses Telegram sendMessage only; never polls updates or starts a second bot.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import tempfile
@@ -41,24 +42,32 @@ def send_telegram_message(token: str, chat_id: str, message: str) -> None:
         raise AlertError("Telegram API did not confirm delivery")
 
 
-def _last_status(path: Path) -> str | None:
+def _read_state(path: Path) -> dict[str, str | None]:
+    """Read committed and in-flight alert states."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return None
-    if isinstance(data, dict) and data.get("status") in STATUSES:
-        return data["status"]
-    return None
+        return {"status": None, "pending": None}
+    if not isinstance(data, dict):
+        return {"status": None, "pending": None}
+    return {
+        "status": data.get("status") if data.get("status") in STATUSES else None,
+        "pending": data.get("pending") if data.get("pending") in STATUSES else None,
+    }
 
 
-def _save_status(path: Path, status: str) -> None:
-    """Replace the state atomically so a restart cannot read partial JSON."""
+def _save_status(path: Path, status: str | None, pending: str | None = None) -> None:
+    """Atomically record the state before and after an outbound send."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_path = tempfile.mkstemp(prefix=".alert-state-", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump(
-                {"status": status, "updated_at": datetime.now(timezone.utc).isoformat()},
+                {
+                    "status": status,
+                    "pending": pending,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
                 stream,
             )
             stream.write("\n")
@@ -94,11 +103,11 @@ def notify_status_change(
     chat_id: str,
     sender: Callable[[str, str, str], None] | None = None,
 ) -> bool:
-    """Send once per status transition; persist state only after success.
+    """Serialize sends and durably reserve each transition before delivery.
 
-    Disabled unless both credentials are configured. The first healthy report
-    establishes a baseline without sending. An initially unhealthy report alerts.
-    On delivery failure the old state is retained and the next run retries.
+    An interrupted/ambiguous send stays pending and is not retried automatically:
+    this favors avoiding duplicate alerts over guaranteed delivery. A confirmed
+    send failure clears the reservation, allowing a retry on the next run.
     """
     if not token or not chat_id:
         return False
@@ -106,14 +115,32 @@ def notify_status_change(
     if status not in STATUSES:
         return False
 
+    # flock serializes separate observer processes as well as threads.
+    # Keep the lock throughout the network send to prevent duplicate delivery.
+    report_directory.mkdir(parents=True, exist_ok=True)
     state_path = report_directory / STATE_FILE
-    previous = _last_status(state_path)
-    if previous == status:
-        return False
-    if previous is None and status == "OK":
-        _save_status(state_path, status)
-        return False
+    lock_path = report_directory / ".alert-state.lock"
+    with lock_path.open("a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        state = _read_state(state_path)
+        previous = state["pending"] or state["status"]
+        if previous == status:
+            return False
+        if previous is None and status == "OK":
+            _save_status(state_path, status)
+            return False
 
-    (sender or send_telegram_message)(token, chat_id, _message(report, previous))
-    _save_status(state_path, status)
-    return True
+        # Fail closed if disk persistence fails: never send without a
+        # durable reservation. If final commit fails after a successful
+        # send, pending prevents duplicate delivery after a restart.
+        _save_status(state_path, state["status"], pending=status)
+        try:
+            (sender or send_telegram_message)(token, chat_id, _message(report, previous))
+        except Exception:
+            # Known delivery failure: restore the prior state so the next
+            # run can retry. If rollback itself fails, pending suppresses
+            # duplicates rather than risking a second send.
+            _save_status(state_path, state["status"], pending=state["pending"])
+            raise
+        _save_status(state_path, status)
+        return True
