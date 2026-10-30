@@ -153,8 +153,13 @@ unset, no Telegram requests or alert-state writes occur.
 - First `OK` establishes a silent baseline; first `WARNING` or `CRITICAL` alerts.
 - Subsequent `OK / WARNING / CRITICAL` changes each alert once, including recovery.
 - Repeated identical states are suppressed using `reports/alert-state.json`.
-- A failed Telegram request is retried on the next observer run, without
-  changing the validator health result or restarting the node.
+  A Linux file lock serializes concurrent observer processes.
+- The transition is reserved on disk **before** sending. If the final state
+  write fails after a successful send, the pending reservation suppresses
+  duplicate alerts. Confirmed send failures restore the prior state for retry.
+  A crash after reservation but before delivery may therefore lose one alert;
+  exactly-once delivery cannot be guaranteed without Telegram-side idempotency.
+  None of these failures changes validator health or restarts the node.
 - Alerts only follow successfully persisted reports; `--no-report` and
   `--healthcheck` never send messages.
 
