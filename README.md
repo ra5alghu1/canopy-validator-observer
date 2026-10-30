@@ -140,6 +140,34 @@ identities are intentionally excluded from this record.
 
 `CANOPY_ADMIN_USER` and `CANOPY_ADMIN_PASSWORD` are optional and should remain only in `.env`.
 
+## Optional Telegram status alerts
+
+The observer can send **outbound messages through an existing Telegram bot**.
+It does **not** start a second bot or call `getUpdates`, so a bot already running
+on a VPS keeps ownership of its command polling.
+
+To opt in, configure `CANOPY_TELEGRAM_BOT_TOKEN` and `CANOPY_TELEGRAM_CHAT_ID`
+in the host's private `.env` (never commit them). Both must be set. With either
+unset, no Telegram requests or alert-state writes occur.
+
+- First `OK` establishes a silent baseline; first `WARNING` or `CRITICAL` alerts.
+- Subsequent `OK / WARNING / CRITICAL` changes each alert once, including recovery.
+- Repeated identical states are suppressed using `reports/alert-state.json`.
+  A Linux file lock serializes concurrent observer processes.
+- The transition is reserved on disk **before** sending. If the final state
+  write fails after a successful send, the pending reservation suppresses
+  duplicate alerts. Confirmed send failures restore the prior state for retry.
+  A crash after reservation but before delivery may therefore lose one alert;
+  exactly-once delivery cannot be guaranteed without Telegram-side idempotency.
+  None of these failures changes validator health or restarts the node.
+- Alerts only follow successfully persisted reports; `--no-report` and
+  `--healthcheck` never send messages.
+
+**Deployment:** This is opt-in code only. The VPS bot, its token, and running
+services are not changed by merging this PR. If another infrastructure bot
+already alerts on Canopy port 9001, those connectivity alerts remain separate;
+enable these detailed health alerts only if you want both.
+
 ## Tests
 
 The tests use fixed local responses and never contact a live validator.

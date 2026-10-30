@@ -16,6 +16,8 @@ from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from canopy_alerts import AlertError, notify_status_change
+
 
 SEVERITY = {"OK": 0, "WARNING": 1, "CRITICAL": 2}
 
@@ -571,6 +573,18 @@ def main(argv: list[str] | None = None) -> int:
                 prune_reports(report_directory, args.retention_days, report_path)
             except OSError as exc:
                 print(f"Warning: report cleanup failed: {exc}", file=sys.stderr)
+
+    if report_path is not None:
+        try:
+            notify_status_change(
+                report,
+                report_directory,
+                token=os.getenv("CANOPY_TELEGRAM_BOT_TOKEN", ""),
+                chat_id=os.getenv("CANOPY_TELEGRAM_CHAT_ID", ""),
+            )
+        except (AlertError, OSError) as exc:
+            # Telegram must never interrupt health checks or affect exit codes.
+            print(f"Warning: Telegram alert not sent: {exc}", file=sys.stderr)
 
     if args.json:
         print(json.dumps(report, indent=2, ensure_ascii=False))
